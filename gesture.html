@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Gemini Ultimate Gesture System</title>
+    <style>
+        body { margin: 0; padding: 0; background: #000; overflow: hidden; font-family: 'Segoe UI', monospace; }
+        
+        #canvas1 { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 1; }
+        .input_video { display: none; }
+
+        /* --- CONTROLS PANEL --- */
+        .controls {
+            position: absolute; top: 20px; left: 20px; width: 220px;
+            padding: 15px; background: rgba(10, 10, 10, 0.8);
+            border: 1px solid #00ffcc; border-radius: 8px;
+            box-shadow: 0 0 15px rgba(0, 255, 204, 0.2);
+            color: #00ffcc; z-index: 100;
+            transition: opacity 0.5s; /* Smooth fade for cinematic mode */
+        }
+
+        h2 { margin: 0 0 10px 0; font-size: 14px; text-transform: uppercase; border-bottom: 1px solid #333; padding-bottom: 5px; }
+        
+        .btn-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; margin-bottom: 10px; }
+        
+        button {
+            background: rgba(0, 255, 204, 0.1); border: 1px solid #00ffcc;
+            color: #00ffcc; padding: 8px; cursor: pointer; font-size: 10px; text-transform: uppercase;
+            transition: 0.2s;
+        }
+        button:hover { background: #00ffcc; color: #000; }
+
+        .slider-section { margin-top: 10px; font-size: 10px; }
+        input[type="color"] { width: 100%; height: 30px; border: none; background: none; cursor: pointer; margin-top: 5px; }
+
+        #status { margin-top: 10px; font-size: 10px; color: white; }
+        .red-alert { color: #ff0055 !important; font-weight: bold; }
+        
+        /* Hint for cinematic mode */
+        .hint { font-size: 9px; color: #666; margin-top: 10px; text-align: center; }
+    </style>
+
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+</head>
+<body>
+
+    <div class="controls">
+        <h2>Control Panel</h2>
+        <div class="btn-grid">
+            <button onclick="setShape('heart')">Heart</button>
+            <button onclick="setShape('sphere')">Sphere</button>
+            <button onclick="setShape('cube')">Cube</button>
+            <button onclick="setShape('helix')">Helix</button>
+            <button onclick="setShape('galaxy')">Galaxy</button>
+            <button onclick="setShape('random')">Chaos</button>
+        </div>
+
+        <div class="slider-section">
+            <label>PARTICLE COLOR</label>
+            <input type="color" id="colorPicker" value="#00ffcc">
+        </div>
+
+        <div id="status">
+            Zoom: 1.0x<br>
+            Hand: Searching...
+        </div>
+        
+        <div class="hint">Press 'H' to hide controls</div>
+    </div>
+
+    <video class="input_video"></video>
+    <canvas id="canvas1"></canvas>
+
+    <script>
+        /** --- 1. SETUP & CONFIG --- **/
+        const canvas = document.getElementById('canvas1');
+        const ctx = canvas.getContext('2d');
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+
+        const statusDiv = document.getElementById('status');
+        
+        // Settings
+        let particles = [];
+        const numParticles = 1200; 
+        let currentShape = 'galaxy';
+        let particleColor = {r: 0, g: 255, b: 204}; // Cyan default
+        
+        // Hand State
+        let handX = -1000, handY = -1000;
+        let isHandDetected = false;
+        
+        // Zoom Physics
+        let targetZoom = 1.0;
+        let currentZoom = 1.0;
+        let proximityZoom = 1.0; 
+
+        /** --- 2. COLOR PICKER LOGIC --- **/
+        document.getElementById('colorPicker').addEventListener('input', (e) => {
+            const hex = e.target.value;
+            particleColor.r = parseInt(hex.slice(1, 3), 16);
+            particleColor.g = parseInt(hex.slice(3, 5), 16);
+            particleColor.b = parseInt(hex.slice(5, 7), 16);
+        });
+
+        /** --- 3. PARTICLE SYSTEM --- **/
+        class Particle {
+            constructor() {
+                this.x = Math.random() * canvas.width;
+                this.y = Math.random() * canvas.height;
+                this.tx = 0; this.ty = 0; this.tz = 0;
+                this.vx = 0; this.vy = 0;
+                this.friction = 0.92;
+                this.ease = 0.08;
+                this.size = Math.random() * 2 + 0.5;
+            }
+
+            update() {
+                const cx = canvas.width / 2;
+                const cy = canvas.height / 2;
+
+                const time = Date.now() * 0.001;
+                let rx = this.tx * Math.cos(time) - this.tz * Math.sin(time);
+                let rz = this.tx * Math.sin(time) + this.tz * Math.cos(time);
+                let ry = this.ty;
+
+                const totalZoom = currentZoom * proximityZoom;
+                const targetX = cx + rx * totalZoom;
+                const targetY = cy + ry * totalZoom;
+
+                const dx = targetX - this.x;
+                const dy = targetY - this.y;
+                
+                this.vx += dx * this.ease;
+                this.vy += dy * this.ease;
+
+                const dist = Math.hypot(this.x - handX, this.y - handY);
+                const repelRadius = 150 * totalZoom; 
+                
+                if (dist < repelRadius) {
+                    const angle = Math.atan2(this.y - handY, this.x - handX);
+                    const force = (repelRadius - dist) / repelRadius; 
+                    const push = force * 20; 
+                    this.vx -= Math.cos(angle) * push;
+                    this.vy -= Math.sin(angle) * push;
+                }
+
+                this.vx *= this.friction;
+                this.vy *= this.friction;
+                this.x += this.vx;
+                this.y += this.vy;
+            }
+
+            draw() {
+                ctx.fillStyle = `rgba(${particleColor.r}, ${particleColor.g}, ${particleColor.b}, 1)`;
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+
+        function initParticles() {
+            particles = [];
+            for (let i = 0; i < numParticles; i++) {
+                particles.push(new Particle());
+            }
+            setShape(currentShape);
+        }
+
+        /** --- 4. SHAPE MATH --- **/
+        function setShape(shape) {
+            currentShape = shape;
+            particles.forEach((p, i) => {
+                const n = i / numParticles; 
+                const t = i * 0.15;
+
+                if (shape === 'heart') {
+                    const scale = 12;
+                    const angle = n * Math.PI * 2;
+                    p.tx = 16 * Math.pow(Math.sin(angle), 3) * scale;
+                    p.ty = -(13 * Math.cos(angle) - 5 * Math.cos(2*angle) - 2 * Math.cos(3*angle) - Math.cos(4*angle)) * scale;
+                    p.tz = (Math.random()-0.5) * 50;
+                }
+                else if (shape === 'sphere') {
+                    const phi = Math.acos(1 - 2 * n);
+                    const theta = Math.PI * numParticles * n;
+                    const rad = 200;
+                    p.tx = rad * Math.sin(phi) * Math.cos(theta);
+                    p.ty = rad * Math.sin(phi) * Math.sin(theta);
+                    p.tz = rad * Math.cos(phi);
+                }
+                else if (shape === 'cube') {
+                    const side = 250;
+                    const axis = Math.floor(Math.random() * 3);
+                    const direction = Math.random() > 0.5 ? 1 : -1;
+                    if (axis === 0) { p.tx = direction * (side/2); p.ty = (Math.random()-0.5)*side; p.tz = (Math.random()-0.5)*side; }
+                    if (axis === 1) { p.ty = direction * (side/2); p.tx = (Math.random()-0.5)*side; p.tz = (Math.random()-0.5)*side; }
+                    if (axis === 2) { p.tz = direction * (side/2); p.tx = (Math.random()-0.5)*side; p.ty = (Math.random()-0.5)*side; }
+                }
+                else if (shape === 'galaxy') {
+                    const angle = i * 0.1;
+                    const rad = 10 + i * 0.3;
+                    p.tx = Math.cos(angle) * rad;
+                    p.ty = (Math.random()-0.5) * 20;
+                    p.tz = Math.sin(angle) * rad;
+                }
+                else if (shape === 'helix') {
+                    p.tx = Math.cos(t) * 100;
+                    p.ty = (n - 0.5) * 600;
+                    p.tz = Math.sin(t) * 100;
+                }
+                else {
+                    p.tx = (Math.random()-0.5) * 800;
+                    p.ty = (Math.random()-0.5) * 600;
+                    p.tz = (Math.random()-0.5) * 500;
+                }
+            });
+        }
+
+        /** --- 5. ANIMATION LOOP --- **/
+        function animate() {
+            currentZoom += (targetZoom - currentZoom) * 0.1;
+
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.2)';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            particles.forEach(p => {
+                p.update();
+                p.draw();
+            });
+
+            // Debug Cursor
+            if (isHandDetected) {
+                // Hide cursor when UI is hidden (Cinematic mode)
+                const ui = document.querySelector('.controls');
+                if (ui.style.display !== 'none') {
+                    ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
+                    ctx.lineWidth = 2;
+                    ctx.beginPath();
+                    ctx.moveTo(handX - 10, handY); ctx.lineTo(handX + 10, handY);
+                    ctx.moveTo(handX, handY - 10); ctx.lineTo(handX, handY + 10);
+                    ctx.stroke();
+                    
+                    ctx.beginPath();
+                    ctx.arc(handX, handY, 20 * currentZoom, 0, Math.PI * 2); 
+                    ctx.strokeStyle = 'rgba(0, 255, 204, 0.5)';
+                    ctx.stroke();
+                }
+            }
+
+            requestAnimationFrame(animate);
+        }
+
+        /** --- 6. AI HAND TRACKING --- **/
+        const videoElement = document.getElementsByClassName('input_video')[0];
+
+        function onResults(results) {
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                isHandDetected = true;
+                const landmarks = results.multiHandLandmarks[0];
+
+                handX = (1 - landmarks[9].x) * canvas.width;
+                handY = landmarks[9].y * canvas.height;
+
+                const wrist = landmarks[0];
+                const tip = landmarks[12];
+                const distance = Math.hypot(tip.x - wrist.x, tip.y - wrist.y);
+                
+                let z = (distance - 0.15) * 6; 
+                if (z < 0.4) z = 0.4;
+                if (z > 2.5) z = 2.5;
+                targetZoom = z;
+
+                const handSize = Math.hypot(landmarks[0].x - landmarks[5].x, landmarks[0].y - landmarks[5].y);
+                
+                if (handSize > 0.15) { 
+                     proximityZoom = 1 + (handSize - 0.15) * 15; 
+                     statusDiv.innerHTML = `Zoom: ${targetZoom.toFixed(1)}x <span class='red-alert'>[TOO CLOSE]</span>`;
+                } else {
+                     proximityZoom = 1.0;
+                     statusDiv.innerHTML = `Zoom: ${targetZoom.toFixed(1)}x`;
+                }
+
+            } else {
+                isHandDetected = false;
+                handX = -1000;
+                statusDiv.innerHTML = `Zoom: 1.0x <br> Hand: Searching...`;
+            }
+        }
+
+        const hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+        
+        hands.setOptions({
+            maxNumHands: 1,
+            modelComplexity: 1,
+            minDetectionConfidence: 0.5,
+            minTrackingConfidence: 0.5
+        });
+
+        hands.onResults(onResults);
+
+        const camera = new Camera(videoElement, {
+            onFrame: async () => { await hands.send({image: videoElement}); },
+            width: 1280, height: 720
+        });
+        camera.start();
+
+        // Start
+        initParticles();
+        animate();
+        
+        window.addEventListener('resize', () => {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            initParticles();
+        });
+
+        // --- CINEMATIC MODE LOGIC (Press H) ---
+        window.addEventListener('keydown', (e) => {
+            if (e.key === 'h' || e.key === 'H') {
+                const ui = document.querySelector('.controls');
+                if (ui.style.display === 'none') {
+                    ui.style.display = 'block';
+                    document.body.style.cursor = 'default';
+                } else {
+                    ui.style.display = 'none';
+                    document.body.style.cursor = 'none'; // Hides mouse cursor for recording
+                }
+            }
+        });
+
+    </script>
+</body>
+</html>
